@@ -1,0 +1,1458 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Deposits API",
+    "version": "v1",
+    "description": "Record **future deposits** against **tradelines** (credit accounts such as a card or auto loan) and\ntrack each tradeline's **outstanding balance** — `amount` minus the sum of its deposits.\n\n## Try it\n\n1. Get an API key. Locally, `bin/rails db:seed` prints one per role\n   (`export ADMIN_TOKEN=dpx_…`); otherwise run `bin/rails \"auth:create_key[my-name,admin]\"`.\n2. Click **Authorize** (top right), paste the token (just the `dpx_…` value, no `Bearer` prefix) and confirm.\n   It is remembered across page reloads in this browser.\n3. Open an endpoint, click **Try it out**, then **Execute**. Requests go to the server this page is served from.\n\n## Authentication & roles\n\nEvery endpoint except `GET /up` requires `Authorization: Bearer <api key>`.\n\n| Role | Read tradelines & deposits | Create deposits | Create tradelines | Read audit log |\n|---|:-:|:-:|:-:|:-:|\n| `viewer` | ✓ | | | |\n| `operator` | ✓ | ✓ | | |\n| `admin` | ✓ | ✓ | ✓ | ✓ |\n\nA missing, unknown, expired or revoked key returns **401**. A valid key whose role lacks the permission\nreturns **403** (and the attempt is recorded in the audit log).\n\n## Money\n\nAmounts are **strings with exactly two decimals** (`\"3223.54\"`) in every response, so they never pass\nthrough a lossy float. In requests, send a string (preferred) or a JSON number. Values with fractions of\na cent are rejected, never rounded.\n\n## Outstanding balance\n\n`outstanding_balance = amount − Σ deposits`. A deposit larger than the current outstanding balance is\nrejected with `422 insufficient_balance`; depositing exactly the remaining balance is allowed. The check\nis atomic, so concurrent requests can never overdraw a tradeline.\n\n## Idempotency\n\nSend an `Idempotency-Key` header (e.g. a UUID) when creating a deposit. Retrying with the same key and body\nreturns the original deposit with `200 OK` and `Idempotent-Replayed: true` instead of creating a duplicate.\nReusing a key with a different body returns `422 idempotency_key_reused`.\n\n## Pagination\n\nList endpoints take `page` (default 1) and `limit` (default 25, max 100) and return a plain JSON array.\nPagination metadata is in the response headers: `Link` (RFC 8288 `first`/`prev`/`next`/`last`),\n`Current-Page`, `Page-Items`, `Total-Pages` and `Total-Count`. A page past the end returns `[]`.\n\n## Errors\n\nEvery error has the same shape:\n\n```json\n{ \"error\": { \"code\": \"validation_failed\", \"message\": \"Deposit is invalid\",\n             \"details\": { \"amount\": [\"must be greater than 0\"] } } }\n```\n\n| Status | `code` | Meaning |\n|---|---|---|\n| 400 | `bad_request` | Malformed JSON, missing body, invalid `page`/`limit` |\n| 401 | `unauthorized` | Missing or invalid API key |\n| 403 | `forbidden` | The key's role does not allow this action |\n| 404 | `not_found` | Unknown tradeline, or a deposit that does not belong to it |\n| 422 | `validation_failed` | Invalid fields — all errors are returned at once in `details` |\n| 422 | `insufficient_balance` | Deposit exceeds the outstanding balance |\n| 422 | `idempotency_key_reused` | Same `Idempotency-Key`, different request |\n| 422 | `tradeline_amount_missing` | Legacy tradeline without an amount |\n| 429 | `rate_limited` | Too many requests; see `Retry-After` |\n\n## Rate limits\n\n300 requests/min per API key, 20/min per IP for requests without credentials, 1000/min per IP overall.\n\n## Tracing\n\nEvery response has an `X-Request-Id` header. The same id is stored on audit events and in the request\nlogs — include it when reporting a problem.\n"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000",
+      "description": "Local development"
+    }
+  ],
+  "security": [
+    {
+      "bearer_auth": [
+
+      ]
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tradelines",
+      "description": "Credit accounts and their outstanding balance."
+    },
+    {
+      "name": "Deposits",
+      "description": "Scheduled deposits against a tradeline. Deposits are immutable."
+    },
+    {
+      "name": "Audit events",
+      "description": "Append-only record of money- and security-relevant actions (admin only)."
+    },
+    {
+      "name": "Health",
+      "description": "Liveness probe for load balancers."
+    }
+  ],
+  "paths": {
+    "/audit_events": {
+      "get": {
+        "summary": "List audit events",
+        "tags": [
+          "Audit events"
+        ],
+        "operationId": "listAuditEvents",
+        "description": "Append-only audit trail, newest first. Each event records the acting API key, request id, IP address\nand user agent, plus event-specific metadata.\n\n| `action` | Recorded when |\n|---|---|\n| `tradeline.created` | An admin creates a tradeline |\n| `deposit.created` | A deposit is committed (in the same transaction) |\n| `deposit.rejected` | A deposit fails validation or the balance check |\n| `deposit.idempotent_replay` | A retry is answered with an existing deposit |\n| `authorization.denied` | A key attempts an action its role does not allow |\n\nPaginated — see the pagination headers. **Role:** `admin`.\n",
+        "parameters": [
+          {
+            "name": "event",
+            "in": "query",
+            "required": false,
+            "description": "Filter by action.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "tradeline.created",
+                "deposit.created",
+                "deposit.rejected",
+                "deposit.idempotent_replay",
+                "authorization.denied"
+              ]
+            }
+          },
+          {
+            "name": "auditable_type",
+            "in": "query",
+            "required": false,
+            "description": "Filter by record type.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "Tradeline",
+                "Deposit"
+              ]
+            }
+          },
+          {
+            "name": "auditable_id",
+            "in": "query",
+            "required": false,
+            "description": "Filter by record id.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "api_key_id",
+            "in": "query",
+            "required": false,
+            "description": "Filter by acting API key.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "required": false,
+            "description": "Filter by the `X-Request-Id` of the request that caused the event.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/page"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of audit events",
+            "headers": {
+              "link": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "RFC 8288 links: `rel=\"first\"`, `\"prev\"`, `\"next\"`, `\"last\"`."
+              },
+              "current-page": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Current page number."
+              },
+              "page-items": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Items per page (the effective `limit`)."
+              },
+              "total-pages": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Number of pages."
+              },
+              "total-count": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Total number of items."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AuditEvent"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "headers": {
+              "www-authenticate": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`Bearer realm=\"deposits\"`"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key's role does not allow this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tradelines/{tradeline_id}/deposits": {
+      "parameters": [
+        {
+          "name": "tradeline_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Tradeline id."
+        }
+      ],
+      "get": {
+        "summary": "List a tradeline's deposits",
+        "tags": [
+          "Deposits"
+        ],
+        "operationId": "listDeposits",
+        "description": "Returns the tradeline's deposits ordered by `deposit_date`, then id. Paginated — see the pagination\nheaders. **Role:** `viewer` or higher.\n",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/page"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of deposits",
+            "headers": {
+              "link": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "RFC 8288 links: `rel=\"first\"`, `\"prev\"`, `\"next\"`, `\"last\"`."
+              },
+              "current-page": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Current page number."
+              },
+              "page-items": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Items per page (the effective `limit`)."
+              },
+              "total-pages": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Number of pages."
+              },
+              "total-count": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Total number of items."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Deposit"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tradeline not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "headers": {
+              "www-authenticate": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`Bearer realm=\"deposits\"`"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a deposit",
+        "tags": [
+          "Deposits"
+        ],
+        "operationId": "createDeposit",
+        "description": "Schedules a deposit against the tradeline and returns it with the tradeline's new outstanding balance.\n\n- `amount` must be greater than 0, have at most 2 decimal places, and be **no more than the current\n  outstanding balance** (depositing exactly the remaining balance is allowed). The check is atomic,\n  so concurrent requests can never overdraw the tradeline.\n- `deposit_date` must be `YYYY-MM-DD`.\n- Send an `Idempotency-Key` to make retries safe.\n\nThe body may be flat or wrapped in `{\"deposit\": {…}}`. Deposits cannot be changed or deleted afterwards.\nSuccessful and rejected attempts are recorded in the audit log. **Role:** `operator` or `admin`.\n",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            },
+            "description": "Unique key per intended deposit, e.g. a UUID such as `6f1c2c9e-3f0a-4b8e-9a41-1d2f1b7c8e10`. A retry with the same key and body returns the original deposit instead of creating a new one. Scoped per tradeline. Use a new key for each new deposit."
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Deposit created",
+            "headers": {
+              "location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "URL of the new deposit."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositWithBalance"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Idempotent replay: this Idempotency-Key was already used with the same body",
+            "headers": {
+              "idempotent-replayed": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                },
+                "description": "Present when the original deposit is being returned."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositWithBalance"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or malformed body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tradeline not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Rejected: invalid input, insufficient balance, or a reused Idempotency-Key",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "insufficient_balance": {
+                    "value": {
+                      "error": {
+                        "code": "insufficient_balance",
+                        "message": "Deposit exceeds the outstanding balance",
+                        "details": {
+                          "amount": [
+                            "exceeds the outstanding balance of 750.00"
+                          ]
+                        }
+                      }
+                    },
+                    "summary": "Deposit exceeds the outstanding balance"
+                  },
+                  "validation_failed": {
+                    "value": {
+                      "error": {
+                        "code": "validation_failed",
+                        "message": "Deposit is invalid",
+                        "details": {
+                          "amount": [
+                            "must be greater than 0",
+                            "must have at most 2 decimal places"
+                          ],
+                          "deposit_date": [
+                            "must be a valid date in YYYY-MM-DD format"
+                          ]
+                        }
+                      }
+                    },
+                    "summary": "Invalid amount and date"
+                  },
+                  "idempotency_key_reused": {
+                    "value": {
+                      "error": {
+                        "code": "idempotency_key_reused",
+                        "message": "Idempotency-Key was already used for a different deposit",
+                        "details": {
+                          "idempotency_key": [
+                            "was already used with different parameters"
+                          ]
+                        }
+                      }
+                    },
+                    "summary": "Idempotency-Key reused with a different body"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/DepositError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "headers": {
+              "www-authenticate": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`Bearer realm=\"deposits\"`"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key's role does not allow this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DepositInput"
+              },
+              "examples": {
+                "deposit": {
+                  "summary": "Schedule a deposit",
+                  "value": {
+                    "amount": "250.00",
+                    "deposit_date": "2026-11-15"
+                  }
+                },
+                "too_large": {
+                  "summary": "Exceeds the balance (422)",
+                  "value": {
+                    "amount": "5000.00",
+                    "deposit_date": "2026-11-15"
+                  }
+                },
+                "invalid": {
+                  "summary": "Invalid input (422)",
+                  "value": {
+                    "amount": "-1.005",
+                    "deposit_date": "2026-02-30"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/tradelines/{tradeline_id}/deposits/{id}": {
+      "parameters": [
+        {
+          "name": "tradeline_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Tradeline id."
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Deposit id."
+        }
+      ],
+      "get": {
+        "summary": "Show a deposit",
+        "tags": [
+          "Deposits"
+        ],
+        "operationId": "getDeposit",
+        "description": "Returns one deposit with its tradeline's current outstanding balance. Returns 404 if the deposit\nbelongs to a different tradeline. **Role:** `viewer` or higher.\n",
+        "responses": {
+          "200": {
+            "description": "The deposit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositWithBalance"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Deposit not found on this tradeline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "headers": {
+              "www-authenticate": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`Bearer realm=\"deposits\"`"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/up": {
+      "get": {
+        "summary": "Health check",
+        "tags": [
+          "Health"
+        ],
+        "operationId": "healthCheck",
+        "description": "Returns 200 when the application boots and can serve requests. No authentication.",
+        "security": [
+
+        ],
+        "responses": {
+          "200": {
+            "description": "The application is up"
+          }
+        }
+      }
+    },
+    "/tradelines": {
+      "get": {
+        "summary": "List tradelines",
+        "tags": [
+          "Tradelines"
+        ],
+        "operationId": "listTradelines",
+        "description": "Returns tradelines ordered by id, each with its current `outstanding_balance`.\nPaginated — see the pagination headers. **Role:** `viewer` or higher.\n",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/page"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of tradelines",
+            "headers": {
+              "link": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "RFC 8288 links: `rel=\"first\"`, `\"prev\"`, `\"next\"`, `\"last\"`."
+              },
+              "current-page": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Current page number."
+              },
+              "page-items": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Items per page (the effective `limit`)."
+              },
+              "total-pages": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Number of pages."
+              },
+              "total-count": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Total number of items."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Tradeline"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid pagination parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "headers": {
+              "www-authenticate": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`Bearer realm=\"deposits\"`"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a tradeline",
+        "tags": [
+          "Tradelines"
+        ],
+        "operationId": "createTradeline",
+        "description": "Creates a tradeline. The body may be flat (`{\"name\": …}`) or wrapped (`{\"tradeline\": {\"name\": …}}`).\nRecorded in the audit log as `tradeline.created`. **Role:** `admin`.\n",
+        "parameters": [
+
+        ],
+        "responses": {
+          "201": {
+            "description": "Tradeline created",
+            "headers": {
+              "location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "URL of the new tradeline."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tradeline"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or malformed body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "validation_failed": {
+                    "value": {
+                      "error": {
+                        "code": "validation_failed",
+                        "message": "Tradeline is invalid",
+                        "details": {
+                          "name": [
+                            "can't be blank"
+                          ],
+                          "amount": [
+                            "must have at most 2 decimal places"
+                          ]
+                        }
+                      }
+                    },
+                    "summary": "Blank name and fractional cents"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "headers": {
+              "www-authenticate": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`Bearer realm=\"deposits\"`"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key's role does not allow this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TradelineInput"
+              },
+              "examples": {
+                "credit_card": {
+                  "summary": "Credit card",
+                  "value": {
+                    "name": "Visa Gold",
+                    "amount": "1000.00"
+                  }
+                },
+                "auto_loan": {
+                  "summary": "Auto loan",
+                  "value": {
+                    "name": "Auto Loan",
+                    "amount": "18500.00"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/tradelines/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Tradeline id."
+        }
+      ],
+      "get": {
+        "summary": "Show a tradeline",
+        "tags": [
+          "Tradelines"
+        ],
+        "operationId": "getTradeline",
+        "description": "Returns one tradeline with its current `outstanding_balance`. **Role:** `viewer` or higher.",
+        "responses": {
+          "200": {
+            "description": "The tradeline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tradeline"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tradeline not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "headers": {
+              "www-authenticate": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`Bearer realm=\"deposits\"`"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer_auth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "API key (dpx_…)",
+        "description": "API key issued with `bin/rails \"auth:create_key[name,role]\"`. Paste the token only."
+      }
+    },
+    "parameters": {
+      "page": {
+        "name": "page",
+        "in": "query",
+        "required": false,
+        "description": "Page number (1-based).",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        }
+      },
+      "limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "description": "Items per page.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 25
+        }
+      }
+    },
+    "schemas": {
+      "Tradeline": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "amount",
+          "deposits_total",
+          "outstanding_balance",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 4
+          },
+          "name": {
+            "type": "string",
+            "example": "Visa Gold"
+          },
+          "amount": {
+            "type": "string",
+            "pattern": "^-?\\d+\\.\\d{2}$",
+            "example": "1000.00",
+            "description": "Total amount owed. `null` only for legacy records.",
+            "nullable": true
+          },
+          "deposits_total": {
+            "type": "string",
+            "pattern": "^-?\\d+\\.\\d{2}$",
+            "example": "350.00",
+            "description": "Sum of all deposits."
+          },
+          "outstanding_balance": {
+            "type": "string",
+            "pattern": "^-?\\d+\\.\\d{2}$",
+            "example": "650.00",
+            "description": "`amount − deposits_total`. `null` when the tradeline has no amount.",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-25T02:30:35.113Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-25T02:30:35.113Z"
+          }
+        }
+      },
+      "TradelineInput": {
+        "type": "object",
+        "required": [
+          "name",
+          "amount"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "example": "Visa Gold"
+          },
+          "amount": {
+            "type": "string",
+            "example": "1000.00",
+            "description": "At least 0, at most 2 decimal places, at most 999999.99."
+          }
+        }
+      },
+      "Deposit": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "tradeline_id",
+          "amount",
+          "deposit_date",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 1
+          },
+          "tradeline_id": {
+            "type": "integer",
+            "example": 4
+          },
+          "amount": {
+            "type": "string",
+            "pattern": "^-?\\d+\\.\\d{2}$",
+            "example": "250.00",
+            "description": "Decimal amount as a string with exactly two decimals."
+          },
+          "deposit_date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-11-15",
+            "description": "Date the deposit is scheduled for."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-25T02:30:35.113Z"
+          }
+        }
+      },
+      "DepositWithBalance": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "tradeline_id",
+          "amount",
+          "deposit_date",
+          "created_at",
+          "tradeline_outstanding_balance"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 1
+          },
+          "tradeline_id": {
+            "type": "integer",
+            "example": 4
+          },
+          "amount": {
+            "type": "string",
+            "pattern": "^-?\\d+\\.\\d{2}$",
+            "example": "250.00",
+            "description": "Decimal amount as a string with exactly two decimals."
+          },
+          "deposit_date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-11-15"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-25T02:30:35.113Z"
+          },
+          "tradeline_outstanding_balance": {
+            "type": "string",
+            "pattern": "^-?\\d+\\.\\d{2}$",
+            "example": "750.00",
+            "description": "The tradeline's outstanding balance now.",
+            "nullable": true
+          }
+        }
+      },
+      "DepositInput": {
+        "type": "object",
+        "required": [
+          "amount",
+          "deposit_date"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "250.00",
+            "description": "Greater than 0, at most 2 decimal places, and no more than the outstanding balance. A JSON number is also accepted."
+          },
+          "deposit_date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-11-15",
+            "description": "Strict ISO 8601 `YYYY-MM-DD`. Usually a future date; past dates are allowed."
+          }
+        }
+      },
+      "AuditEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "action",
+          "auditable_type",
+          "auditable_id",
+          "metadata",
+          "request_id",
+          "ip_address",
+          "user_agent",
+          "created_at",
+          "actor"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 7
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "tradeline.created",
+              "deposit.created",
+              "deposit.rejected",
+              "deposit.idempotent_replay",
+              "authorization.denied"
+            ],
+            "example": "deposit.created"
+          },
+          "auditable_type": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "Tradeline",
+              "Deposit",
+              null
+            ],
+            "example": "Deposit"
+          },
+          "auditable_id": {
+            "type": "integer",
+            "nullable": true,
+            "example": 2
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Event details, e.g. amounts and balances before/after, or the rejection reason.",
+            "example": {
+              "tradeline_id": 4,
+              "amount": "100.00",
+              "deposit_date": "2026-12-15",
+              "outstanding_balance_before": "750.00",
+              "outstanding_balance_after": "650.00"
+            }
+          },
+          "request_id": {
+            "type": "string",
+            "nullable": true,
+            "example": "4aa34462-e665-4db7-b1df-574967cefd63",
+            "description": "Matches the `X-Request-Id` response header and the request log line."
+          },
+          "ip_address": {
+            "type": "string",
+            "nullable": true,
+            "example": "203.0.113.7"
+          },
+          "user_agent": {
+            "type": "string",
+            "nullable": true,
+            "example": "curl/8.7.1"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-25T02:30:35.113Z"
+          },
+          "actor": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": false,
+            "description": "The API key that performed the action.",
+            "required": [
+              "id",
+              "name",
+              "role",
+              "token_prefix"
+            ],
+            "properties": {
+              "id": {
+                "type": "integer",
+                "example": 2
+              },
+              "name": {
+                "type": "string",
+                "example": "payments-service"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "viewer",
+                  "operator",
+                  "admin"
+                ],
+                "example": "operator"
+              },
+              "token_prefix": {
+                "type": "string",
+                "example": "dpx_7Hq2xLm9",
+                "description": "First 12 characters of the key, for identification."
+              }
+            }
+          }
+        }
+      },
+      "BadRequestError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "bad_request"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object",
+                "description": "Field name → list of messages (validation errors only).",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "UnauthorizedError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "unauthorized"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object",
+                "description": "Field name → list of messages (validation errors only).",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ForbiddenError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "forbidden"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object",
+                "description": "Field name → list of messages (validation errors only).",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "NotFoundError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "not_found"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object",
+                "description": "Field name → list of messages (validation errors only).",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ValidationError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "validation_failed"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object",
+                "description": "Field name → list of messages (validation errors only).",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "DepositError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "validation_failed",
+                  "insufficient_balance",
+                  "idempotency_key_reused",
+                  "tradeline_amount_missing"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object",
+                "description": "Field name → list of messages (validation errors only).",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "RateLimitedError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "rate_limited"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object",
+                "description": "Field name → list of messages (validation errors only).",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -44,6 +44,13 @@ RSpec.configure do |config|
   # triggering implicit auto-inclusion in groups with matching metadata.
   config.shared_context_metadata_behavior = :apply_to_host_groups
 
+  # Live API tests (spec/integration) need a running server; run them with
+  # bin/integration or INTEGRATION=1.
+  config.filter_run_excluding :integration unless ENV["INTEGRATION"]
+
+  config.order = :random
+  Kernel.srand config.seed
+
 # The settings below are suggested to provide a good initial experience
 # with RSpec, but feel free to customize to your heart's content.
 =begin

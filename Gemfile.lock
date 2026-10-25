@@ -75,6 +75,8 @@ GEM
       minitest (>= 5.1)
       mutex_m
       tzinfo (~> 2.0)
+    addressable (2.9.0)
+      public_suffix (>= 2.0.2, < 8.0)
     base64 (0.2.0)
     bigdecimal (3.1.7)
     bootsnap (1.18.3)
@@ -107,6 +109,16 @@ GEM
     jbuilder (2.11.5)
       actionview (>= 5.0.0)
       activesupport (>= 5.0.0)
+    json-schema (6.2.1)
+      addressable (~> 2.8)
+      bigdecimal (>= 3.1, < 5)
+    logger (1.7.0)
+    lograge (0.15.1)
+      actionpack (>= 4)
+      activesupport (>= 4)
+      logger
+      railties (>= 4)
+      request_store (~> 1.0)
     loofah (2.23.1)
       crass (~> 1.0.2)
       nokogiri (>= 1.12.0)
@@ -137,15 +149,19 @@ GEM
       racc (~> 1.4)
     nokogiri (1.16.8-x86_64-linux)
       racc (~> 1.4)
+    pagy (9.4.0)
     pry (0.14.2)
       coderay (~> 1.1)
       method_source (~> 1.0)
     psych (5.1.2)
       stringio
+    public_suffix (7.0.5)
     puma (6.4.3)
       nio4r (~> 2.0)
     racc (1.8.1)
     rack (3.0.10)
+    rack-attack (6.8.0)
+      rack (>= 1.0, < 4)
     rack-session (2.0.0)
       rack (>= 3.0.0)
     rack-test (2.1.0)
@@ -187,6 +203,8 @@ GEM
       psych (>= 4.0.0)
     reline (0.5.1)
       io-console (~> 0.5)
+    request_store (1.7.0)
+      rack (>= 1.4)
     rspec-core (3.13.0)
       rspec-support (~> 3.13.0)
     rspec-expectations (3.13.0)
@@ -204,6 +222,20 @@ GEM
       rspec-mocks (~> 3.13)
       rspec-support (~> 3.13)
     rspec-support (3.13.1)
+    rswag-api (2.17.0)
+      activesupport (>= 5.2, < 8.2)
+      railties (>= 5.2, < 8.2)
+    rswag-specs (2.17.0)
+      activesupport (>= 5.2, < 8.2)
+      json-schema (>= 2.2, < 7.0)
+      railties (>= 5.2, < 8.2)
+      rspec-core (>= 2.14)
+    rswag-ui (2.17.0)
+      actionpack (>= 5.2, < 8.2)
+      railties (>= 5.2, < 8.2)
+    shoulda-matchers (7.0.1)
+      activesupport (>= 7.1)
+    simplecov (1.3.2)
     sqlite3 (1.7.3-aarch64-linux)
     sqlite3 (1.7.3-arm64-darwin)
     sqlite3 (1.7.3-x86_64-linux)
@@ -222,6 +254,7 @@ PLATFORMS
   aarch64-linux
   arm64-darwin-22
   arm64-darwin-23
+  arm64-darwin-25
   x86_64-linux
 
 DEPENDENCIES
@@ -229,10 +262,18 @@ DEPENDENCIES
   debug
   factory_bot_rails
   jbuilder
+  lograge
+  pagy (~> 9.0)
   pry
   puma (>= 5.0)
+  rack-attack
   rails (~> 7.1)
   rspec-rails
+  rswag-api (~> 2.17)
+  rswag-specs (~> 2.17)
+  rswag-ui (~> 2.17)
+  shoulda-matchers
+  simplecov
   sqlite3 (~> 1.4)
   tzinfo-data
 

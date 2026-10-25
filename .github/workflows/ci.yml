@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      RAILS_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+
+      - name: Prepare database
+        run: bin/rails db:create db:schema:load
+
+      - name: Unit and request specs
+        run: bundle exec rspec
+
+      - name: API docs are up to date
+        run: |
+          bin/rails docs:generate
+          git diff --exit-code swagger/ || (echo "::error::swagger/v1/openapi.json is stale. Run bin/rails docs:generate and commit it." && exit 1)
+
+      - name: Live API integration tests
+        env:
+          RAILS_ENV: development
+        run: bin/integration
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
