@@ -1,4 +1,6 @@
 # Idempotent sample data for local development and the README walkthrough.
+# Never seed the test database: specs expect to start from an empty one.
+return if Rails.env.test?
 
 [
   { name: "Visa Platinum Credit Card", amount: "3223.54" },

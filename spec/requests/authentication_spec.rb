@@ -7,8 +7,7 @@ RSpec.describe 'Authentication', type: :request do
     controller = route.defaults[:controller]
     next if controller.nil? || controller.start_with?('rails/')
 
-    path = route.path.spec.to_s.sub('(.:format)', '').gsub(/:\w+/, '1')
-    [route.verb, path]
+    [route.verb, route.path.spec.to_s.sub('(.:format)', '')]
   end
 
   it 'covers every API endpoint' do
@@ -16,9 +15,11 @@ RSpec.describe 'Authentication', type: :request do
     expect(api_routes.size).to eq(7)
   end
 
-  api_routes.each do |verb, path|
-    describe "#{verb} #{path}" do
-      before { create(:tradeline, id: 1) }
+  api_routes.each do |verb, pattern|
+    describe "#{verb} #{pattern}" do
+      # Point at records that exist, so a 401 proves auth runs before lookup.
+      let(:deposit) { create(:deposit) }
+      let(:path) { pattern.sub(':tradeline_id', deposit.tradeline_id.to_s).sub(':id', deposit.id.to_s) }
 
       it 'requires a token' do
         process verb.downcase.to_sym, path, headers: { 'Content-Type' => 'application/json' }
