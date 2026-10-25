@@ -10,6 +10,9 @@ class Rack::Attack
   end
 
   safelist("health check") { |req| req.path == "/up" }
+  # Swagger UI loads several static assets per page view; API calls made from
+  # it carry a token and are throttled normally.
+  safelist("api docs") { |req| req.path == "/" || req.path.start_with?("/api-docs") }
 
   # Each API key gets its own budget. Keyed by a digest so tokens never sit in the cache.
   throttle("requests per api key", limit: ENV.fetch("RATE_LIMIT_PER_KEY", 300).to_i, period: PERIOD) do |req|

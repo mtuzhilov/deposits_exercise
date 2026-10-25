@@ -27,6 +27,10 @@ gem "pagy", "~> 9.0"
 # One-line structured (JSON) request logs [https://github.com/roidrage/lograge]
 gem "lograge"
 
+# OpenAPI docs: served as JSON/YAML and browsable with Swagger UI at /api-docs [https://github.com/rswag/rswag]
+gem "rswag-api", "~> 2.17"
+gem "rswag-ui", "~> 2.17"
+
 # Request throttling to protect the API and slow token brute-forcing [https://github.com/rack/rack-attack]
 gem "rack-attack"
 
@@ -36,6 +40,8 @@ group :development, :test do
   gem "rspec-rails"
   gem "pry"
   gem "factory_bot_rails"
+  # Generates the OpenAPI document from request specs (rake rswag:specs:swaggerize)
+  gem "rswag-specs", "~> 2.17"
 end
 
 group :test do

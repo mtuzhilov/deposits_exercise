@@ -40,6 +40,7 @@ Please do not fork the repo; if forked accidentally, please delete the fork. For
 A JSON API for recording future deposits against tradelines. It has authentication, role-based access, an append-only audit trail, and an outstanding balance that **can't be overdrawn, even by concurrent requests**.
 
 - [Quick start](#quick-start)
+- [Interactive API docs](#interactive-api-docs)
 - [Authentication & roles](#authentication--roles)
 - [API reference](#api-reference)
 - [Walkthrough with curl](#walkthrough-with-curl)
@@ -76,6 +77,34 @@ Start the server:
 bin/rails server         # http://localhost:3000
 curl -s localhost:3000/up   # health check, no auth required
 ```
+
+Then open **http://localhost:3000/api-docs** to browse the API and try it from your browser.
+
+## Interactive API docs
+
+| URL | What it is |
+|---|---|
+| **http://localhost:3000/api-docs** | Swagger UI: browse every endpoint and call it from the browser (`/` redirects here) |
+| http://localhost:3000/api-docs/v1/openapi.json | The raw OpenAPI 3.0 document, for Postman, Insomnia or client code generators |
+
+**Making calls from the docs page**
+
+1. Click **Authorize** (top right), paste a token from the seed output (just the `dpx_…` value, without `Bearer`), click **Authorize** and then **Close**. The key is remembered across page reloads in that browser. Paste the viewer, operator or admin token to see what each role can do.
+2. Expand an endpoint, for example **POST /tradelines/{tradeline_id}/deposits**, and click **Try it out**.
+3. Fill in the parameters. For request bodies, pick one of the ready-made examples (a valid deposit, one that exceeds the balance, invalid input) or edit the JSON.
+4. Click **Execute**. You see the response status, body and headers (including `X-Request-Id` and the pagination headers), plus the equivalent `curl` command.
+
+Requests go to whichever server is serving the page, so the docs work unchanged on any host or port.
+
+**What's documented:** every endpoint, with a description, the required role, parameters, request body schema and examples, and every possible response (success and each error) with its JSON schema and examples. The overview at the top of the page covers authentication, roles, money format, idempotency, pagination, error codes, rate limits and request tracing.
+
+**How the docs stay accurate:** the OpenAPI document is generated with [rswag](https://github.com/rswag/rswag) from the request specs in `spec/docs/`. Those specs run as part of `bundle exec rspec`: each one sends the documented request and **validates the real response against the documented schema**. Undocumented fields fail the build, and so does any API route missing from the docs (`spec/requests/api_docs_spec.rb`). CI also fails if the committed `swagger/v1/openapi.json` is out of date.
+
+```bash
+bin/rails docs:generate   # regenerate swagger/v1/openapi.json after changing spec/docs or spec/swagger_helper.rb
+```
+
+The docs are public, like most API references; every call made from them still needs a valid API key. To stop serving them (for example in production), start the app with `API_DOCS_ENABLED=false`.
 
 ## Authentication & roles
 
@@ -314,16 +343,17 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "localhost:3000/audit_events?eve
 
 ## Running the tests
 
-### Unit, model and request specs
+### Unit, model, request and API-doc specs
 
 ```bash
 bundle exec rspec
 ```
 
-221 examples, covering:
+255 examples, covering:
 
 - **Models**: every validation edge case (zero/negative/non-numeric/fractional-cent amounts, invalid and ambiguous dates, max column size), the DB check constraints, immutability, `outstanding_balance`, reconciliation, API key digest/expiry/revocation, and the role permission matrix.
 - **`Deposits::Create`**: exact-balance deposits, overdraw rejection with no side effects, floating-point edge cases (`3223.54 − 3000.00`), idempotent replay and key reuse, and **real multi-threaded concurrency tests** that prove the balance can't be overdrawn and that concurrent retries with one idempotency key create exactly one deposit.
+- **API docs** (`spec/docs`): one spec per documented response. Each sends the documented request and validates the real response against the OpenAPI schema. These specs also generate the OpenAPI document.
 - **Requests**: every endpoint, status code and error shape, pagination, and N+1 protection. 401s are tested on *every route discovered from the route table*, so a new endpoint can't skip auth by accident. A full role × endpoint authorization matrix, audit contents, rate limiting and the rake tasks are covered too.
 
 A coverage report is written to `coverage/index.html` (about 99% line, 93% branch).
@@ -402,11 +432,11 @@ Each event records the **actor** (API key), `request_id`, IP address and user ag
 
 Every response carries an `X-Request-Id` header, and the same ID is stored on audit events, so a client's support ticket can be traced from the log line to the audit row. Tokens and `Authorization` values are filtered from logs.
 
-**Rate limiting** (Rack::Attack): 300 requests/min per API key, 20/min per IP for requests without credentials, and 1000/min per IP overall. Over the limit, the response is `429` with `Retry-After`. `/up` is exempt. The limits are configurable with `RATE_LIMIT_PER_KEY`, `RATE_LIMIT_UNAUTHENTICATED` and `RATE_LIMIT_PER_IP`.
+**Rate limiting** (Rack::Attack): 300 requests/min per API key, 20/min per IP for requests without credentials, and 1000/min per IP overall. Over the limit, the response is `429` with `Retry-After`. `/up` and the static docs pages are exempt (calls made from the docs carry a key and are throttled normally). The limits are configurable with `RATE_LIMIT_PER_KEY`, `RATE_LIMIT_UNAUTHENTICATED` and `RATE_LIMIT_PER_IP`.
 
 ## Production considerations & future work
 
-Done as part of this exercise: authentication, RBAC, an audit trail, idempotency, race-free balance enforcement, DB constraints, rate limiting, structured logs, a health check, `force_ssl` in production, and CI.
+Done as part of this exercise: authentication, RBAC, an audit trail, idempotency, race-free balance enforcement, DB constraints, rate limiting, structured logs, a health check, interactive OpenAPI docs, `force_ssl` in production, and CI.
 
 What I would do next for a real deployment:
 
@@ -416,4 +446,4 @@ What I would do next for a real deployment:
 - **Audit hardening**: ship audit events to write-once storage (or hash-chain them) so even a DB admin can't alter history. Add retention policies.
 - **Multi-currency**: currently implicit single currency. Store an ISO 4217 code per tradeline and use integer minor units.
 - **Observability**: metrics (deposit volume, rejection rate, 4xx/5xx), alerting on `deposits:reconcile` drift, and error tracking.
-- **API docs**: an OpenAPI spec generated from the request specs (e.g. rswag).
+- **API docs**: publish the OpenAPI document to a developer portal and generate typed client SDKs from it.
