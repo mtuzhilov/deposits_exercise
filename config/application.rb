@@ -1,6 +1,16 @@
 require_relative "boot"
 
-require "rails/all"
+require "rails"
+# Only the frameworks this API uses. Active Storage, Action Mailbox and Action
+# Text are left out on purpose: they mount public routes of their own that
+# would sit outside the API key authentication.
+require "active_model/railtie"
+require "active_job/railtie"
+require "active_record/railtie"
+require "action_controller/railtie"
+require "action_mailer/railtie"
+require "action_view/railtie"
+require "action_cable/engine"
 
 # Require the gems listed in Gemfile, including any gems
 # you've limited to :test, :development, or :production.
