@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Runs the live API test suite (spec/integration) over real HTTP.
+#
+#   bin/integration                              # boots a server on PORT (default 3999), runs, stops it
+#   BASE_URL=http://localhost:3000 bin/integration  # targets a server you already started
+#
+# Short-lived API keys (one per role, expiring in 1 hour) are issued in the
+# target environment's database for the run.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+export RAILS_ENV="${RAILS_ENV:-development}"
+PORT="${PORT:-3999}"
+SERVER_PID=""
+
+cleanup() {
+  if [[ -n "$SERVER_PID" ]]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+bin/rails db:prepare >/dev/null
+
+if [[ -z "${BASE_URL:-}" ]]; then
+  export BASE_URL="http://127.0.0.1:${PORT}"
+  echo "Starting server on ${BASE_URL} (log: log/integration-server.log)"
+  bin/rails server -p "$PORT" -b 127.0.0.1 -P "tmp/pids/integration-server.pid" >log/integration-server.log 2>&1 &
+  SERVER_PID=$!
+
+  for _ in $(seq 1 60); do
+    curl -fs "${BASE_URL}/up" >/dev/null 2>&1 && break
+    kill -0 "$SERVER_PID" 2>/dev/null || { echo "Server failed to start:"; tail -20 log/integration-server.log; exit 1; }
+    sleep 0.5
+  done
+  curl -fs "${BASE_URL}/up" >/dev/null || { echo "Server did not become healthy"; exit 1; }
+fi
+
+eval "$(bin/rails runner '
+  %w[admin operator viewer].each do |role|
+    _key, token = ApiKey.issue!(name: "integration-#{role}", role: role, expires_at: 1.hour.from_now)
+    puts "export #{role.upcase}_TOKEN=#{token}"
+  end
+')"
+
+INTEGRATION=1 bundle exec rspec spec/integration "$@"

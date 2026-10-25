@@ -1,6 +1,8 @@
 require 'rails_helper'
 
 RSpec.describe TradelinesController, type: :controller do
+  before { request.headers.merge!(auth_headers(:viewer)) }
+
   describe '#index' do
     it 'responds with a 200' do
       get :index
